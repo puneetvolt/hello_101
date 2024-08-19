@@ -1,0 +1,304 @@
+def volt_audits():
+
+  with SSHTunnelForwarder(('65.2.33.177', 22),
+        ssh_username="ec2-user",
+        ssh_pkey= "/home/lakshmi_vanga/aws_ssh_file" ,
+        remote_bind_address=('voltaudits.cmphoqdhfzt8.ap-south-1.rds.amazonaws.com', 5432)) as server:
+        server.start()
+        params = {
+                    'database': 'voltaudits',
+                    'user': 'volt_ro_user',
+                    'password': 'volt1234',
+                    'host': 'localhost',
+                    'port': server.local_bind_port
+                }
+        conn = psycopg2.connect(**params)
+        conn.set_session(readonly=True)
+
+        data = pd.read_sql_query("""
+                                            
+                                            
+                                            
+                                    with  
+                                    credit_applications_entity_audit_completed_data as 
+                                    (
+                                    select application_id
+                                    , last_updated_on 
+                                    , application_state
+                                    , current_step_id 
+                                    from credit_applications_entity_audit
+                                    where application_state in ('COMPLETED')
+                                    ),
+                                    credit_applications_entity_audit_inprogress_data as 
+                                    (
+                                    select application_id 
+                                    , application_state
+                                    , max(last_updated_on) as last_updated_on
+                                    from credit_applications_entity_audit
+                                    where application_state in ('IN_PROGRESS')
+                                    group by 1,2
+                                    )
+                                    ,
+                                    credit_main_data as
+                                    (
+                                    select account_id , min(created_on) as created_on  from credit_main
+                                    where created_on < timestamp '2023-05-05 07:32:12.927' 
+                                    group by account_id
+                                    ),
+                                    credit_application_meta_datacte as 
+                                    (
+                                    select application_id
+                                    , eligible_credit_limit
+                                    , pledged_credit_limit 
+                                    from credit_application_meta_data
+                                    ),
+                                    credit_applications_entity_data as  
+                                    (
+                                    select 
+                                      c.lender_account_id
+                                    , c.application_id
+                                    , c.account_id
+                                    , c.partner_account_id
+                                    , c.platform_account_id
+                                    , c.application_type
+                                    , c.current_step_id
+                                    , case when c.application_state = 'SUSPENDED' and ca.application_id is not null then 'COMPLETED'
+                                           else c.application_state end as application_state 
+                                    , c.last_updated_on 
+                                    , c.created_on 
+                                    , 'DEFAULTED DATE' as date_source
+                                    , c.completed_on
+                                    from credit_applications_entity c
+                                    
+                                      left join credit_applications_entity_audit_completed_data ca 
+                                      on c.application_id = ca.application_id
+                                      and ca.application_state in ('COMPLETED')
+                                    
+                                    where c.application_state in ('COMPLETED' , 'SUSPENDED' )
+                                    )
+                                    --select * from credit_applications_entity_data
+                                    ,
+                                    completed_dates_data as 
+                                    (
+                                    select 
+                                      application_id
+                                    , completed_on
+                                    , 'COMPLETED_ON AVAILABLE' as date_source 
+                                    from credit_applications_entity_data 
+                                    where completed_on is not NULL 
+                                    and application_state = 'COMPLETED'
+                                    and last_updated_on >= timestamp '2023-05-05 07:32:12.927'
+                                    
+                                    union
+                                    
+                                    select 
+                                      caea2.application_id
+                                    , min(caea2.last_updated_on) as completed_on
+                                    , 'AUDIT_TABLE AVAILABLE' as date_source
+                                    from
+                                    ( -- get the last updated date from audit table when the application is still in progress
+                                    select 
+                                      caea.application_id
+                                    , max(caea.last_updated_on) as max_luo_ip
+                                    from
+                                    credit_applications_entity_audit_inprogress_data caea
+                                    
+                                    inner join credit_applications_entity_data cae
+                                    on caea.application_id = cae.application_id
+                                                                        
+                                    where cae.application_state = 'COMPLETED' 
+                                    and cae.completed_on is NULL 
+                                    and caea.application_state = 'IN_PROGRESS'
+                                    group by 1                                  
+                                    ) luo_ip
+                                                                     
+                                    inner join credit_applications_entity_audit_completed_data caea2 
+                                    on luo_ip.application_id = caea2.application_id
+                                    where caea2.last_updated_on > luo_ip.max_luo_ip
+                                    group by 1
+                                    
+                                    union
+                                                                
+                                    -- The last updated_on date is being used as completed date for the corresponding application_type
+                                    -- inlcude the completed on as null condition
+                                    select 
+                                    application_id
+                                    , last_updated_on as completed_on
+                                    , 'ENHANCEMENT BEFORE AUDIT TABLE' as date_source
+                                    from credit_applications_entity_data 
+                                    where application_type != 'CREDIT_AGAINST_SECURITIES_BORROWER' 
+                                    and application_state = 'COMPLETED' 
+                                    and last_updated_on < timestamp '2023-05-05 07:32:12.927'
+                                    
+                                    union
+                                    
+                                    -- The last credit created date from credit is being used as completed date for the corresponding application_type
+                                    select 
+                                      cae2.application_id
+                                    , c.created_on as completed_on
+                                    , 'FIRST APPLICATION BEFORE AUDIT TABLE' as data_source
+                                    from credit_applications_entity_data cae2     
+                                    inner join credit_main_data c
+                                    on c.account_id = cae2.account_id
+                                    where cae2.created_on < c.created_on
+                                    and cae2.application_type = 'CREDIT_AGAINST_SECURITIES_BORROWER' and cae2.application_state = 'COMPLETED' 
+                                    and cae2.application_id != '294f9bc7-6221-4984-a563-dddb1049706d' and cae2.completed_on is NULL 
+                                    
+                                    )
+                                     --select * from completed_dates_data
+                                    ,
+                                    credit_applications_data1 as
+                                    (
+                                    select 
+                                      cae1.lender_account_id
+                                    , cae1.application_id
+                                    , cae1.account_id
+                                    , cae1.partner_account_id
+                                    , cae1.platform_account_id
+                                    , cae1.application_type
+                                    , cae1.current_step_id
+                                    , cae1.application_state 
+                                    --, caea1.last_updated_on
+                                    , partner_account_type
+                                    , platform_name
+                                    , completed_on
+                                    , date_source
+                                    , eligible_credit_limit 
+                                    , pledged_credit_limit  
+                                    from credit_applications_entity_data cae1
+                                    
+                                    left join credit_application_meta_datacte camd  
+                                    on cae1.application_id = camd.application_id
+                                    
+                                    left join  (select account_id, partner_account_type from partner_accounts) pa
+                                    on cae1.partner_account_id = pa.account_id 
+                                                                
+                                    left join  (select account_id, platform_name from platform_accounts) pfa
+                                    on  cae1.platform_account_id = pfa.account_id       
+
+                                    where cae1.application_state = 'COMPLETED'                    
+                                    )
+                                    --select * from credit_applications_data1
+                                    ,
+                                    credit_aggregated_data as
+                                    (  
+                                    select 
+                                      b.lender_account_id
+                                    , b.platform_name
+                                    , b.partner_account_id
+                                    , b.partner_account_type
+                                    , b.account_id
+                                    , b.application_id
+                                    , b.application_type
+                                    , 'COMPLETED' as current_step_id
+                                    , 'COMPLETED' as application_state
+                                    , b.eligible_credit_limit
+                                    , b.pledged_credit_limit
+                                    , coalesce(a.date_source, b.date_source) as data_source 
+                                    , (coalesce(a.completed_on, b.completed_on)::timestamp + interval '5 hour 30 minutes') as current_step_started_on
+                                    from credit_applications_data1 b
+                                    left join completed_dates_data a
+                                    on a.application_id = b.application_id
+                                    where b.application_state='COMPLETED'
+                                    and b.partner_account_id is not null
+                                    )
+                                    --select * from credit_aggregated_data 
+                                    -- get information regarding the partner till last month 
+                                    ,partner_activated_dates as 
+                                    (
+                                    select 
+                                    partner_account_id
+                                    
+                                    ,min(current_step_started_on) as partner_activated_on
+                                    ,max(current_step_started_on) as partner_last_app_date
+                                    ,max(pledged_credit_limit) as max_pledged_credit_limit
+                                    ,sum(pledged_credit_limit) as sum_pledged_credit_limit
+                                    ,count(case when application_type = 'CREDIT_AGAINST_SECURITIES_BORROWER' then application_id else null end) as total_customers
+                                    ,(DATE_TRUNC('month', current_date+ interval '5 hour 30 minutes') - INTERVAL '2 month')  as  previous_month
+                                    ,DATE_TRUNC('month' , min(current_step_started_on)) as   partner_activated_month
+                                    ,DATE_TRUNC('month' , max(current_step_started_on)) as  partner_last_app_month
+                                    from credit_aggregated_data
+                                    where DATE_TRUNC('month' , current_step_started_on) <= (DATE_TRUNC('month', current_date+ interval '5 hour 30 minutes') - INTERVAL '2 month')
+                                    
+                                    group by 1
+                                    ),
+                                    partner_classification_data as
+                                    (
+                                    select
+                                    partner_account_id
+                                    , partner_activated_on
+                                    , partner_activated_month
+                                    , partner_last_app_date
+                                    , partner_last_app_month
+                                    , max_pledged_credit_limit
+                                    , sum_pledged_credit_limit
+                                    , total_customers
+                                    , ((EXTRACT(YEAR FROM previous_month) - EXTRACT(YEAR FROM partner_activated_month)) * 12 +
+                                        (EXTRACT(MONTH FROM previous_month) - EXTRACT(MONTH FROM partner_activated_month))) as month_count
+                                        
+                                    , total_customers/nullif((EXTRACT(YEAR FROM previous_month) - EXTRACT(YEAR FROM partner_activated_month)) * 12 +
+                                        (EXTRACT(MONTH FROM previous_month) - EXTRACT(MONTH FROM partner_activated_month)),0) as  average_customer_per_month  
+                                        
+                                    
+                                    , case when DATE_PART( 'day'   ,  (DATE_TRUNC('month', current_date+ interval '5 hour 30 minutes') - INTERVAL '31 day')- partner_activated_on::TIMESTAMP ) < 45 then 'Activations < 45 days'
+                                           when sum_pledged_credit_limit >= 10000000 
+                                           and total_customers >= 5 
+                                           and max_pledged_credit_limit >= 2000000 
+                                           and total_customers/NULLIF(((EXTRACT(YEAR FROM previous_month) - EXTRACT(YEAR FROM partner_activated_month)) * 12 +
+                                        (EXTRACT(MONTH FROM previous_month) - EXTRACT(MONTH FROM partner_activated_month))),0) >= 1.5 
+                                           --and partner_last_app_month = previous_month 
+                                           then 'GOLD'
+                                           else 'REST' end as mfd_group_1
+                                          
+                                    , DATE_PART( 'day', (DATE_TRUNC('month', current_date+ interval '5 hour 30 minutes') - INTERVAL '1 day')- partner_last_app_month ) as days_diff
+                                    , case when DATE_PART( 'day', (DATE_TRUNC('month', current_date+ interval '5 hour 30 minutes') - INTERVAL '31 day')-partner_last_app_date ) > 45 then 'CHURN'
+                                           when DATE_PART( 'day', (DATE_TRUNC('month', current_date+ interval '5 hour 30 minutes') - INTERVAL '31 day')-partner_last_app_date ) <= 45 then 'ACTIVE'
+                                                else null end as mfd_group_2  
+                                    from partner_activated_dates
+                                    )
+                                    --select * from partner_classification_data
+                                    ,
+                                    partner_activated_latest_dates as 
+                                    (
+                                    select 
+                                    partner_account_id
+                                    ,min(current_step_started_on) as partner_activated_on
+                                    ,max(current_step_started_on) as partner_last_app_date
+                                    ,sum(pledged_credit_limit) as sum_pledged_credit_limit
+                                    ,count(distinct application_id) as applications
+                                    ,count(distinct case when application_type = 'CREDIT_AGAINST_SECURITIES_BORROWER' then application_id else null end) as total_new_applications
+                                    ,count(distinct case when application_type = 'CREDIT_RENEWAL_AGAINST_SECURITIES' then application_id else null end) as total_renewal_applications
+                                    ,count(distinct case when application_type not in ( 'CREDIT_AGAINST_SECURITIES_BORROWER','CREDIT_AGAINST_SECURITIES_BORROWER') 
+                                            then application_id else null end) as total_existing_applications
+                                    ,sum(case when application_type = 'CREDIT_AGAINST_SECURITIES_BORROWER' then pledged_credit_limit else null end) as total_new_pledged_limits
+                                    ,sum(case when application_type = 'CREDIT_RENEWAL_AGAINST_SECURITIES' then pledged_credit_limit else null end) as total_renewal_pledged_limits
+                                    from credit_aggregated_data
+                                    where DATE_TRUNC('month' , current_step_started_on) = (DATE_TRUNC('month', current_date+ interval '5 hour 30 minutes')- INTERVAL '1 month')
+                                    group by 1
+                                    )
+                                    select 
+                                     coalesce(pc.partner_account_id,pl.partner_account_id) as partner_account_id
+                                    ,coalesce(pc.partner_activated_on,pl.partner_activated_on) as partner_activated_on
+                                    ,coalesce(pc.partner_last_app_date,pl.partner_last_app_date) as partner_last_app_date
+                                    ,case when pc.partner_activated_on is null then 'New MFD' else pc.mfd_group_1 end as  mfd_group_1
+                                    ,case when pc.partner_activated_on is null then 'New MFD' else pc.mfd_group_2 end as  mfd_group_2
+                                    ,pc.average_customer_per_month as average_customer_per_month
+                                    ,pc.total_customers as prev_total_customers
+                                    ,pc.sum_pledged_credit_limit as prev_sum_pledged_credit_limit
+                                    ,pc.max_pledged_credit_limit as prev_max_pledged_credit_limit
+                                    ,case when pl.applications > 0 then 'case done' else 'case not done' end as case_done_flag
+                                    ,pl.applications as current_applications
+                                    ,pl.total_new_applications as current_new_applications
+                                    ,pl.total_renewal_applications as current_renewal_applications
+                                    ,pl.total_existing_applications as current_existing_applications
+                                    ,pl.total_new_pledged_limits as current_new_pledged_limits
+                                    ,pl.total_renewal_pledged_limits as current_renewal_pledged_limits
+                                    ,pl.sum_pledged_credit_limit as current_sum_pledged_credit_limit
+                                    from partner_activated_latest_dates pl
+                                    full outer join partner_classification_data pc
+                                     on pl.partner_account_id = pc.partner_account_id 
+                                    
+                                    """,conn)
+        conn.close()
+
+  return data

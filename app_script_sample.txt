@@ -1,0 +1,143 @@
+function sendSummaryToday() {
+    var sheets = [
+        { name: 'Aggregate sheet Overall', range: 'A1:L16', heading: 'Lender Level Overall View' },
+        { name: 'Aggregate sheet Overall', range: 'B18:E26', heading: 'Lender Level Overall View' }
+    ];
+
+    var currentDate = Utilities.formatDate(new Date(), SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone(), 'dd-MMM-yyyy');
+    var emailAddress = ['akash.thakur@voltmoney.in', 'lakshmi.vanga@voltmoney.in','nishant.athmakoori@voltmoney.in','bharat@voltmoney.in'];
+    var subject = 'Customer Success MIS Summary - ' + currentDate;
+    var body = '';
+
+
+    sheets.forEach(function(sheetInfo) {
+        var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetInfo.name);
+        if (sheet) {
+            var rangeData = sheet.getRange(sheetInfo.range);
+
+            // Collapse all grouped rows and columns
+            collapseGroups(sheet);
+
+            // Get the HTML table for the current sheet
+            var htmlTable = getHtmlTable(rangeData, sheet);
+            body += '<br>' + htmlTable + '<br>';
+        } else {
+            body += '<br><strong>Sheet ' + sheetInfo.name + ' not found.</strong><br>';
+        }
+    });
+
+    body += 'for further analysis / view, refer to sheet: <a href="https://docs.google.com/spreadsheets/d/1z5HrFLGfozz5keXCat9mDRz4Cv5-YGRREf58JYIpv0Q/edit?gid=760503024#gid=760503024"> {Customer Success}</a> <br><br> Regards<br>Akash Thakur';
+
+    // Send email
+    GmailApp.sendEmail(emailAddress, subject, '', { htmlBody: body });
+}
+
+function getHtmlTable(range, sheet) {
+    var data = range.getDisplayValues();
+    var numRows = data.length;
+    var numCols = data[0].length;
+    var html = '<table border="1" style="border-collapse: collapse; text-align: center; width: auto;">';
+
+    // Track merged cells to avoid repeating them in the HTML table
+    var mergedCells = {};
+
+    for (var i = 0; i < numRows; i++) {
+        var row = range.getCell(i + 1, 1).getRow();
+        if (sheet.isRowHiddenByUser(row)) {
+            continue;
+        }
+        html += '<tr>';
+        for (var j = 0; j < numCols; j++) {
+            var col = range.getCell(1, j + 1).getColumn();
+            if (sheet.isColumnHiddenByUser(col)) {
+                continue;
+            }
+            var cell = range.getCell(i + 1, j + 1);
+            var cellValue = data[i][j];
+
+            var backgroundColor = cell.getBackground();
+            var fontColor = cell.getFontColor();
+            var fontSize = cell.getFontSize() + 2;
+            var fontWeight = cell.getFontWeight();
+            var horizontalAlignment = cell.getHorizontalAlignment();
+            var verticalAlignment = cell.getVerticalAlignment();
+            var isMerged = cell.isPartOfMerge();
+            var colspan = 1;
+            var rowspan = 1;
+
+            if (isMerged) {
+                var mergeRange = cell.getMergedRanges()[0];
+                var mergeRangeA1 = mergeRange.getA1Notation();
+                if (!mergedCells[mergeRangeA1]) {
+                    mergedCells[mergeRangeA1] = true;
+                    colspan = mergeRange.getWidth();
+                    rowspan = mergeRange.getHeight();
+                } else {
+                    continue;
+                }
+            }
+
+            var borderStyles = getBorderStyles(sheet, cell, row, col);
+
+            // Set horizontal padding to 10px and vertical padding to 4px
+            html += '<td style="background-color: ' + backgroundColor + '; color: ' + fontColor + '; font-size: ' + fontSize + 'px; font-weight: ' + fontWeight + '; text-align: ' + horizontalAlignment + '; vertical-align: ' + verticalAlignment + '; padding: 4px 10px; ' + borderStyles + '" colspan="' + colspan + '" rowspan="' + rowspan + '">' + cellValue + '</td>';
+        }
+        html += '</tr>';
+    }
+    html += '</table>';
+    return html;
+}
+
+function getBorderStyles(sheet, cell, row, col) {
+    // Initialize border styles
+    var styles = '';
+    var border = cell.getBorder();
+
+    if (border) {
+        // Top border
+        if (border.top) {
+            styles += 'border-top: ' + border.top.width + 'px ' + border.top.style + ' ' + border.top.color + '; ';
+        }
+
+        // Left border
+        if (border.left) {
+            styles += 'border-left: ' + border.left.width + 'px ' + border.left.style + ' ' + border.left.color + '; ';
+        }
+
+        // Right border
+        if (border.right) {
+            styles += 'border-right: ' + border.right.width + 'px ' + border.right.style + ' ' + border.right.color + '; ';
+        }
+
+        // Bottom border
+        if (border.bottom) {
+            styles += 'border-bottom: ' + border.bottom.width + 'px ' + border.bottom.style + ' ' + border.bottom.color + '; ';
+        }
+    }
+
+    return styles;
+}
+
+function collapseGroups(sheet) {
+    var lastRow = sheet.getLastRow();
+    for (var row = 1; row <= lastRow; row++) {
+        try {
+            var group = sheet.getRowGroup(row, 1);
+            if (group && !group.isCollapsed()) {
+                group.collapse();
+            }
+        } catch (e) {
+        }
+    }
+
+    var lastColumn = sheet.getLastColumn();
+    for (var col = 1; col <= lastColumn; col++) {
+        try {
+            var group = sheet.getColumnGroup(col, 1);
+            if (group && !group.isCollapsed()) {
+                group.collapse();
+            }
+        } catch (e) {
+        }
+    }
+}
